@@ -33,20 +33,15 @@ poetry install
 ## C++ build
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
-```
-
-## Run the standalone scalar demo
-
-```bash
-./build/fop_demo
+mkdir build && cd build
+cmake ..
+cmake --build .
 ```
 
 ## Run CommonRoad scenarios
 
 ```bash
-poetry run python scripts/run_commonroad.py --config cfgs/demo_config.yaml
+python scripts/run_commonroad.py
 ```
 
 The configuration file controls the scenario list, sampling resolution, vehicle parameters, target speed, and output directory.

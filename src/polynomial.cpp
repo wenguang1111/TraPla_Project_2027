@@ -111,7 +111,7 @@ double QuinticPolynomial::velocity(double t) const {
     return a1_ + t * (2.0 * a2_ + t * (3.0 * a3_ + t * (4.0 * a4_ + t * 5.0 * a5_)));
 }
 
-double QuarticPolynomial::acceleration(double t) const {
+double QuinticPolynomial::acceleration(double t) const {
     return 2.0 * a2_ + t * (6.0 * a3_ + t * (12.0 * a4_ + t * 20.0 * a5_));
 }
 

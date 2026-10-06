@@ -2,7 +2,6 @@ import argparse
 import csv
 import math
 import subprocess
-from io import BytesIO
 from pathlib import Path
 
 import matplotlib
@@ -11,6 +10,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 from PIL import Image
 from commonroad.common.file_reader import CommonRoadFileReader
+from commonroad.geometry.shape import Rectangle
+from commonroad.prediction.prediction import TrajectoryPrediction
+from commonroad.scenario.obstacle import DynamicObstacle, ObstacleType
+from commonroad.scenario.state import InitialState
+from commonroad.scenario.trajectory import Trajectory
 from commonroad.visualization.mp_renderer import MPRenderer
 from commonroad_route_planner.route_planner import RoutePlanner
 from omegaconf import OmegaConf
@@ -27,8 +31,8 @@ def route_reference(scenario, planning_problem):
     return np.asarray(points, dtype=float)
 
 
-def project_state(initial_state, reference):
-    position = np.asarray(initial_state.position, dtype=float)
+def project_state(position, orientation, velocity, acceleration, reference):
+    position = np.asarray(position, dtype=float)
     a = reference[:-1]
     b = reference[1:]
     ab = b - a
@@ -46,9 +50,6 @@ def project_state(initial_state, reference):
     offset = position - projections[index]
     d = direction[0] * offset[1] - direction[1] * offset[0]
     reference_yaw = math.atan2(direction[1], direction[0])
-    orientation = float(getattr(initial_state, "orientation", reference_yaw))
-    velocity = float(getattr(initial_state, "velocity", 0.0))
-    acceleration = float(getattr(initial_state, "acceleration", 0.0))
     delta = orientation - reference_yaw
     s_d = velocity * math.cos(delta)
     d_d = velocity * math.sin(delta)
@@ -66,11 +67,11 @@ def polygons_from_shape(shape):
     return []
 
 
-def obstacle_frames(scenario, initial_time_step, tick_t, max_t):
+def obstacle_frames(scenario, current_time_step, tick_t, max_t):
     frame_count = int(math.ceil(max_t / tick_t)) + 1
     frames = []
     for frame in range(frame_count):
-        commonroad_step = initial_time_step + int(round((frame * tick_t) / scenario.dt))
+        commonroad_step = current_time_step + int(round((frame * tick_t) / scenario.dt))
         polygons = []
         for obstacle in scenario.obstacles:
             occupancy = obstacle.occupancy_at_time(commonroad_step)
@@ -102,49 +103,231 @@ def write_input(path, cfg, state, reference, frames):
 
 
 def read_best(path):
-    t = []
-    x = []
-    y = []
+    rows = []
     with path.open("r", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         for row in reader:
-            t.append(float(row["t"]))
-            x.append(float(row["x"]))
-            y.append(float(row["y"]))
-    return np.asarray(t), np.asarray(x), np.asarray(y)
+            rows.append(
+                {
+                    "t": float(row["t"]),
+                    "x": float(row["x"]),
+                    "y": float(row["y"]),
+                    "speed": float(row["speed"]),
+                    "accel": float(row["accel"]),
+                }
+            )
+    return rows
 
 
-def save_gif(scenario, planning_problem, best_path, output_path, initial_time_step, tick_t):
-    t, x, y = read_best(best_path)
-    frames = []
-    for index in range(len(t)):
-        fig, ax = plt.subplots(figsize=(10, 6))
-        renderer = MPRenderer(ax=ax)
-        renderer.draw_params.time_begin = initial_time_step + int(round(t[index] / scenario.dt))
-        scenario.draw(renderer)
-        planning_problem.draw(renderer)
+def trajectory_yaw(rows, index, fallback):
+    if len(rows) < 2:
+        return fallback
+    if index < len(rows) - 1:
+        dx = rows[index + 1]["x"] - rows[index]["x"]
+        dy = rows[index + 1]["y"] - rows[index]["y"]
+    else:
+        dx = rows[index]["x"] - rows[index - 1]["x"]
+        dy = rows[index]["y"] - rows[index - 1]["y"]
+    if abs(dx) + abs(dy) < 1e-9:
+        return fallback
+    return math.atan2(dy, dx)
+
+
+def final_time_step(scenario, initial_time_step):
+    values = []
+    for obstacle in scenario.dynamic_obstacles:
+        if obstacle.prediction is not None:
+            values.append(obstacle.prediction.final_time_step)
+    if values:
+        return max(values)
+    return initial_time_step + 100
+
+
+def run_planning_cycles(cfg, scenario, planning_problem, reference, executable, output_dir):
+    initial_state = planning_problem.initial_state
+    current_position = np.asarray(initial_state.position, dtype=float)
+    current_orientation = float(initial_state.orientation)
+    current_velocity = float(initial_state.velocity)
+    current_acceleration = float(initial_state.acceleration)
+    current_time_step = int(initial_state.time_step)
+    end_time_step = final_time_step(scenario, current_time_step)
+    tick_t = float(cfg.PLANNER.TICK_T)
+    next_index = max(1, int(round(float(scenario.dt) / tick_t)))
+    executed_states = []
+    best_paths = []
+    frame_steps = []
+
+    while current_time_step < end_time_step:
+        state = project_state(
+            current_position,
+            current_orientation,
+            current_velocity,
+            current_acceleration,
+            reference,
+        )
+        frames = obstacle_frames(
+            scenario,
+            current_time_step,
+            tick_t,
+            float(cfg.PLANNER.MAX_T),
+        )
+        input_path = output_dir / "scenario_input.txt"
+        write_input(input_path, cfg, state, reference, frames)
+        result = subprocess.run(
+            [str(executable), str(input_path), str(output_dir)],
+            check=False,
+        )
+        if result.returncode != 0:
+            break
+
+        rows = read_best(output_dir / "best_trajectory.csv")
+        if len(rows) <= next_index:
+            break
+
+        best_paths.append(
+            (
+                np.asarray([row["x"] for row in rows], dtype=float),
+                np.asarray([row["y"] for row in rows], dtype=float),
+            )
+        )
+        frame_steps.append(current_time_step)
+
+        yaw = trajectory_yaw(rows, next_index, current_orientation)
+        previous_yaw = current_orientation
+        current_position = np.asarray(
+            [rows[next_index]["x"], rows[next_index]["y"]],
+            dtype=float,
+        )
+        current_orientation = yaw
+        current_velocity = rows[next_index]["speed"]
+        current_acceleration = rows[next_index]["accel"]
+        current_time_step += 1
+        yaw_rate = (current_orientation - previous_yaw) / float(scenario.dt)
+
+        next_state = InitialState(
+            time_step=current_time_step,
+            position=current_position,
+            orientation=current_orientation,
+            velocity=current_velocity,
+            acceleration=current_acceleration,
+            yaw_rate=yaw_rate,
+        )
+        executed_states.append(next_state)
+
+        try:
+            if planning_problem.goal.is_reached(next_state):
+                break
+        except AttributeError:
+            pass
+
+        if abs(current_velocity) < 0.01:
+            break
+
+    return executed_states, best_paths, frame_steps
+
+
+def create_ego_vehicle(cfg, planning_problem, executed_states):
+    shape = Rectangle(
+        length=float(cfg.VEHICLE.LENGTH),
+        width=float(cfg.VEHICLE.WIDTH),
+    )
+    if executed_states:
+        trajectory = Trajectory(
+            initial_time_step=int(executed_states[0].time_step),
+            state_list=executed_states,
+        )
+        prediction = TrajectoryPrediction(
+            trajectory=trajectory,
+            shape=shape,
+        )
+    else:
+        prediction = None
+    return DynamicObstacle(
+        obstacle_id=100,
+        obstacle_type=ObstacleType.CAR,
+        obstacle_shape=shape,
+        initial_state=planning_problem.initial_state,
+        prediction=prediction,
+    )
+
+
+def plot_limits(planning_problem, executed_states):
+    x = [float(planning_problem.initial_state.position[0])]
+    y = [float(planning_problem.initial_state.position[1])]
+    x.extend(float(state.position[0]) for state in executed_states)
+    y.extend(float(state.position[1]) for state in executed_states)
+    x_min = min(x) - 30.0
+    x_max = max(x) + 30.0
+    y_min = min(y) - 30.0
+    y_max = max(y) + 30.0
+    length = max(x_max - x_min, y_max - y_min)
+    if length == x_max - x_min:
+        return (
+            x_min,
+            x_max,
+            y_min - (length - (y_max - y_min)) / 2.0,
+            y_max + (length - (y_max - y_min)) / 2.0,
+        )
+    return (
+        x_min - (length - (x_max - x_min)) / 2.0,
+        x_max + (length - (x_max - x_min)) / 2.0,
+        y_min,
+        y_max,
+    )
+
+
+def save_gif(cfg, scenario, planning_problem, ego_vehicle, executed_states, best_paths, frame_steps, output_path):
+    cache_dir = output_path.parent / "gif_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    limits = plot_limits(planning_problem, executed_states)
+    images = []
+
+    for index, (path, time_step) in enumerate(zip(best_paths, frame_steps)):
+        fig = plt.figure(figsize=(25, 10))
+        renderer = MPRenderer()
+        renderer.draw_params.time_begin = time_step
+        renderer.draw_params.dynamic_obstacle.trajectory.draw_trajectory = False
+        renderer.draw_params.dynamic_obstacle.occupancy.draw_occupancies = False
+        renderer.draw_params.lanelet_network.traffic_light.draw_traffic_lights = False
+        renderer.draw_params.lanelet_network.traffic_sign.draw_traffic_signs = False
+        renderer.draw_params.planning_problem.initial_state.state.draw_arrow = False
+        scenario.draw(renderer, renderer.draw_params)
+        renderer.draw_params.dynamic_obstacle.vehicle_shape.occupancy.shape.facecolor = "g"
+        ego_vehicle.draw(renderer)
         renderer.render()
-        ax.plot(x, y, color="red", linewidth=3.0, zorder=1000)
-        ax.plot(x[:index + 1], y[:index + 1], color="limegreen", linewidth=4.0, zorder=1001)
-        ax.scatter([x[index]], [y[index]], s=55, color="black", zorder=1002)
-        ax.axis("equal")
-        fig.tight_layout()
-        buffer = BytesIO()
-        fig.savefig(buffer, format="png", dpi=120)
+
+        x, y = path
+        renderer.ax.plot(x[1:], y[1:], color="red", linewidth=3.0, zorder=25)
+        renderer.ax.set_xlim(limits[0], limits[1])
+        renderer.ax.set_ylim(limits[2], limits[3])
+        renderer.ax.set_aspect("equal")
+        renderer.ax.set_title(f"FOP planning cycle {index}, time step {time_step}")
+
+        frame_path = cache_dir / f"{index}.jpg"
+        fig.savefig(frame_path, dpi=200, bbox_inches="tight")
         plt.close(fig)
-        buffer.seek(0)
-        with Image.open(buffer) as image:
-            frames.append(image.convert("RGB"))
-    if frames:
-        duration = max(40, int(round(tick_t * 1000.0)))
-        frames[0].save(output_path, save_all=True, append_images=frames[1:], duration=duration, loop=0)
+        images.append(Image.open(frame_path).convert("RGB"))
+
+    if images:
+        duration = max(40, int(round(float(scenario.dt) * 1000.0)))
+        images[0].save(
+            output_path,
+            save_all=True,
+            append_images=images[1:],
+            optimize=True,
+            duration=duration,
+            loop=0,
+        )
 
 
 def ensure_build(build_dir):
     executable = build_dir / "fop_scenario"
     if executable.exists():
         return executable
-    subprocess.run(["cmake", "-S", ".", "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"], check=True)
+    subprocess.run(
+        ["cmake", "-S", ".", "-B", str(build_dir), "-DCMAKE_BUILD_TYPE=Release"],
+        check=True,
+    )
     subprocess.run(["cmake", "--build", str(build_dir), "-j"], check=True)
     return executable
 
@@ -153,22 +336,29 @@ def run_file(cfg, scenario_path, executable):
     scenario, planning_problem_set = CommonRoadFileReader(str(scenario_path)).open()
     planning_problem = next(iter(planning_problem_set.planning_problem_dict.values()))
     reference = route_reference(scenario, planning_problem)
-    initial_state = planning_problem.initial_state
-    state = project_state(initial_state, reference)
-    frames = obstacle_frames(scenario, int(initial_state.time_step), float(cfg.PLANNER.TICK_T), float(cfg.PLANNER.MAX_T))
     output_dir = Path(cfg.OUTPUT_DIR) / scenario_path.stem
     output_dir.mkdir(parents=True, exist_ok=True)
-    input_path = output_dir / "scenario_input.txt"
-    write_input(input_path, cfg, state, reference, frames)
-    subprocess.run([str(executable), str(input_path), str(output_dir)], check=True)
-    if cfg.SAVE_PLOT:
+
+    executed_states, best_paths, frame_steps = run_planning_cycles(
+        cfg,
+        scenario,
+        planning_problem,
+        reference,
+        executable,
+        output_dir,
+    )
+
+    if cfg.SAVE_PLOT and best_paths:
+        ego_vehicle = create_ego_vehicle(cfg, planning_problem, executed_states)
         save_gif(
+            cfg,
             scenario,
             planning_problem,
-            output_dir / "best_trajectory.csv",
+            ego_vehicle,
+            executed_states,
+            best_paths,
+            frame_steps,
             output_dir / f"{scenario_path.stem}.gif",
-            int(initial_state.time_step),
-            float(cfg.PLANNER.TICK_T),
         )
 
 

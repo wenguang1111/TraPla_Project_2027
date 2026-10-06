@@ -49,7 +49,7 @@ cmake --build build -j
 poetry run python scripts/run_commonroad.py --config cfgs/demo_config.yaml
 ```
 
-The configuration file controls the scenario list, sampling resolution, vehicle parameters, target speed, and output directory.
+The configuration file controls the scenario list, sampling resolution, vehicle parameters, target speed, and output directory. When `SAVE_PLOT` is `true`, the runner generates an animated `result.gif` for each scenario.
 
 The CommonRoad runner loads each XML scenario, computes a global reference route, projects the initial state into the Frenet frame, prepares obstacle polygons over the planning horizon, and executes the scalar C++ planner.
 
@@ -65,7 +65,7 @@ Each result directory contains:
 scenario_input.txt
 trajectories.csv
 best_trajectory.csv
-result.png
+result.gif
 ```
 
 ## Project structure

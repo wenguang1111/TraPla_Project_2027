@@ -44,9 +44,11 @@ cmake --build .
 python scripts/run_commonroad.py
 ```
 
-The configuration file controls the scenario list, sampling resolution, vehicle parameters, target speed, and output directory. When `SAVE_PLOT` is `true`, the runner generates an animated `result.gif` for each scenario.
+The configuration file controls the scenario list, sampling resolution, vehicle parameters, maximum target speed, and output directory. When `SAVE_PLOT` is `true`, the runner generates an animated GIF for each scenario. The goal position or area is shown in yellow.
 
-The CommonRoad runner loads each XML scenario, computes a global reference route, projects the initial state into the Frenet frame, prepares obstacle polygons over the planning horizon, and executes the scalar C++ planner.
+The CommonRoad runner loads each XML scenario, computes a global reference route, projects the initial state into the Frenet frame, and replans at each scenario time step. It carries forward the Frenet state from the chosen trajectory and adjusts sampled speeds to approach the goal during its allowed time window. The terminal prints one result per scenario: `goal reach` or `planning fail`.
+
+Set `FILES: []` to run every XML file in `INPUT_DIR`; otherwise list the scenario filenames to run.
 
 Results are written to:
 
@@ -60,7 +62,7 @@ Each result directory contains:
 scenario_input.txt
 trajectories.csv
 best_trajectory.csv
-result.gif
+<scenario_name>.gif
 ```
 
 ## Project structure

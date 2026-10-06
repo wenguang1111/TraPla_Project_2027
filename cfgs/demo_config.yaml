@@ -1,8 +1,6 @@
 INPUT_DIR: "data/scenarios"
-FILES:
-  - "BEL_Antwerp-30_3_T-1.xml"
-  - "BEL_Brussels-37_1_T-1.xml"
-  - "ESP_Vigo-89_1_T-1.xml"
+# Empty list runs all XML files in INPUT_DIR.
+FILES: ["ESP_Vigo-89_1_T-1.xml", "DEU_Aschaffenburg-10_33_T-1.xml"]
 OUTPUT_DIR: "data/output"
 BUILD_DIR: "build"
 TARGET_SPEED: 10.0
@@ -10,13 +8,13 @@ SAVE_PLOT: true
 PLANNER:
   TICK_T: 0.1
   ROAD_WIDTH: 7.0
-  N_W_SAMPLE: 5
+  N_W_SAMPLE: 5 # sample in lateral direction
   LOWEST_SPEED: 6.0
   HIGHEST_SPEED: 12.0
-  N_S_SAMPLE: 5
+  N_S_SAMPLE: 5 # sample in longitudinal direction
   MIN_T: 3.0
   MAX_T: 5.0
-  N_T_SAMPLE: 5
+  N_T_SAMPLE: 5 #sample in terminal time
   CHECK_OBSTACLE: true
   CHECK_BOUNDARY: true
 VEHICLE:

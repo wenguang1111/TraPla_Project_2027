@@ -166,7 +166,7 @@ def run_file(cfg, scenario_path, executable):
             scenario,
             planning_problem,
             output_dir / "best_trajectory.csv",
-            output_dir / "result.gif",
+            output_dir / f"{scenario_path.stem}.gif",
             int(initial_state.time_step),
             float(cfg.PLANNER.TICK_T),
         )

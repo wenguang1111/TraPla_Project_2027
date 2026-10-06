@@ -2,12 +2,14 @@ import argparse
 import csv
 import math
 import subprocess
+from io import BytesIO
 from pathlib import Path
 
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
+from PIL import Image
 from commonroad.common.file_reader import CommonRoadFileReader
 from commonroad.visualization.mp_renderer import MPRenderer
 from commonroad_route_planner.route_planner import RoutePlanner
@@ -100,27 +102,42 @@ def write_input(path, cfg, state, reference, frames):
 
 
 def read_best(path):
+    t = []
     x = []
     y = []
     with path.open("r", encoding="utf-8") as file:
         reader = csv.DictReader(file)
         for row in reader:
+            t.append(float(row["t"]))
             x.append(float(row["x"]))
             y.append(float(row["y"]))
-    return np.asarray(x), np.asarray(y)
+    return np.asarray(t), np.asarray(x), np.asarray(y)
 
 
-def save_plot(scenario, planning_problem, best_path, output_path):
-    x, y = read_best(best_path)
-    renderer = MPRenderer()
-    scenario.draw(renderer)
-    planning_problem.draw(renderer)
-    renderer.render()
-    plt.plot(x, y, linewidth=2.5)
-    plt.axis("equal")
-    plt.tight_layout()
-    plt.savefig(output_path, dpi=160)
-    plt.close()
+def save_gif(scenario, planning_problem, best_path, output_path, initial_time_step, tick_t):
+    t, x, y = read_best(best_path)
+    frames = []
+    for index in range(len(t)):
+        fig, ax = plt.subplots(figsize=(10, 6))
+        renderer = MPRenderer(ax=ax)
+        renderer.draw_params.time_begin = initial_time_step + int(round(t[index] / scenario.dt))
+        scenario.draw(renderer)
+        planning_problem.draw(renderer)
+        renderer.render()
+        ax.plot(x, y, linewidth=1.5)
+        ax.plot(x[:index + 1], y[:index + 1], linewidth=3.0)
+        ax.scatter([x[index]], [y[index]], s=40)
+        ax.axis("equal")
+        fig.tight_layout()
+        buffer = BytesIO()
+        fig.savefig(buffer, format="png", dpi=120)
+        plt.close(fig)
+        buffer.seek(0)
+        with Image.open(buffer) as image:
+            frames.append(image.convert("RGB"))
+    if frames:
+        duration = max(40, int(round(tick_t * 1000.0)))
+        frames[0].save(output_path, save_all=True, append_images=frames[1:], duration=duration, loop=0)
 
 
 def ensure_build(build_dir):
@@ -145,7 +162,14 @@ def run_file(cfg, scenario_path, executable):
     write_input(input_path, cfg, state, reference, frames)
     subprocess.run([str(executable), str(input_path), str(output_dir)], check=True)
     if cfg.SAVE_PLOT:
-        save_plot(scenario, planning_problem, output_dir / "best_trajectory.csv", output_dir / "result.png")
+        save_gif(
+            scenario,
+            planning_problem,
+            output_dir / "best_trajectory.csv",
+            output_dir / f"{scenario_path.stem}.gif",
+            int(initial_state.time_step),
+            float(cfg.PLANNER.TICK_T),
+        )
 
 
 def main():

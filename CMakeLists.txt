@@ -15,11 +15,14 @@ add_library(fop_scalar
     src/collision.cpp
     src/cost.cpp
     src/frenet_planner.cpp
+    src/scenario_io.cpp
 )
 
 target_include_directories(fop_scalar PUBLIC include)
-
 target_compile_options(fop_scalar PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(fop_demo src/main.cpp)
 target_link_libraries(fop_demo PRIVATE fop_scalar)
+
+add_executable(fop_scenario src/scenario_main.cpp)
+target_link_libraries(fop_scenario PRIVATE fop_scalar)

@@ -1,0 +1,21 @@
+[tool.poetry]
+name = "trapla-project-2027"
+version = "0.1.0"
+description = "Frenet optimal planning semester project"
+authors = []
+package-mode = false
+
+[tool.poetry.dependencies]
+python = ">=3.10,<3.12"
+numpy = ">=1.22,<2.0"
+matplotlib = ">=3.6,<3.8"
+omegaconf = ">=2.3,<3.0"
+shapely = ">=2.0,<3.0"
+commonroad-io = "2024.1"
+commonroad-route-planner = "2024.1.1"
+commonroad-drivability-checker = "2024.1"
+commonroad_vehicle_models = "3.0.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
